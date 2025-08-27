@@ -1,1 +1,1 @@
-I definitely will add something here one day
+create a .env file with your API key.
