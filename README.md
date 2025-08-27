@@ -8,9 +8,13 @@ this project is an AI developed in python powered by gemini. the user can intera
 # Future updates
 
 better user voice input recognition (google's isnt great)
+ 
 human voice output
+
 a 3d model connected to the AI
+
 better file organization on vscode
+
 decentralization of gemini, creating a self hosted, private, AI.
 
 
