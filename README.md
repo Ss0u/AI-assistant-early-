@@ -9,11 +9,13 @@ this project is an AI developed in python powered by gemini. the user can intera
 
 *First update* - Added real time continuous speech with the AI in a loop.
 
-*Second update* - Better user voice input recognition (undergoing)
+*Second update* - Better user voice input recognition and memory of previous chats via json files (undergoing)
 
 # Future updates
  
 human voice output
+
+better chat memory, via docker
 
 a 3d model connected to the AI
 
