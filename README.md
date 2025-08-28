@@ -28,4 +28,4 @@ decentralization of gemini, creating a self hosted, private, AI.
 
 # Dev notes
 
-The voice input from google is TERRIBLE LOL
+08/28 - The voice input from google is TERRIBLE LOL
