@@ -1,5 +1,5 @@
 ### Before usage 
-**create a ".env" file with your API key.** 
+**put your api key on .env** 
 
 # About the project
 
