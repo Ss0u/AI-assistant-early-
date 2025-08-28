@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 import speech_recognition as sr
 import google.generativeai as genai
 import pyttsx3
+import json
 
 # --- 1. INITIAL CONFIGURATION ---
 
@@ -16,52 +17,44 @@ if not api_key:
     raise ValueError("GOOGLE_API_KEY not found in the .env file")
 genai.configure(api_key=api_key)
 
+DATA_FOLDER = "data"
+MEMORY_FILE = os.path.join(DATA_FOLDER, "memory.json")
 
-# --- 2. MODEL AND VOICE INITIALIZATION ---
-try:
-    model = genai.GenerativeModel(
-        model_name='gemini-2.5-flash',
-        system_instruction=(
-            "personality input"
-        )
-    )
-    # Start a chat session that will retain conversation history
-    chat = model.start_chat(history=[])
-except Exception as e:
-    print(f"Error initializing the Gemini model: {e}")
-    exit()
+if not os.path.exists(DATA_FOLDER):
+        os.makedirs(DATA_FOLDER)
 
-# Initialize the text-to-speech engine
-try:
-    tts_engine = pyttsx3.init()
-    # Find and set an English voice
-    english_voice_id = None
-    for voice in tts_engine.getProperty('voices'):
-        if "english" in voice.name.lower():
-            english_voice_id = voice.id
-            break
-    if english_voice_id:
-        tts_engine.setProperty('voice', english_voice_id)
-except Exception as e:
-    print(f"Error initializing the TTS engine: {e}")
-    exit()
+# --- 2. FUNCTION DEFINITIONS (ALL FUNCTIONS GO HERE) ---
 
-
-# --- 3. FUNCTION DEFINITIONS ---
+def load_history_from_memory():
+    """Loads conversation history from memory.json and formats it for Gemini."""
+    filename = "memory.json"
+    try:
+        with open(filename, 'r', encoding='utf-8') as f:
+            history_json = json.load(f)
+        
+        # Convert our simple JSON format to the one Gemini's 'history' parameter expects
+        gemini_history = []
+        for entry in history_json:
+            if isinstance(entry, dict) and 'user' in entry and 'isan' in entry:
+                gemini_history.append({'role': 'user', 'parts': [entry['user']]})
+                gemini_history.append({'role': 'model', 'parts': [entry['isan']]})
+        
+        if gemini_history:
+            print(f"Successfully loaded {len(history_json)} turns from conversation history.")
+        return gemini_history
+            
+    except (FileNotFoundError, json.JSONDecodeError):
+        print("No previous history found. Starting a new conversation.")
+        return []
 
 def speech_to_text():
-    """
-    Captures audio when speech is detected and converts it to text.
-    It actively listens instead of using a fixed duration.
-    """
+    """Captures audio when speech is detected and converts it to text."""
     recognizer = sr.Recognizer()
     with sr.Microphone() as source:
         print("\nAdjusting for ambient noise...")
         recognizer.adjust_for_ambient_noise(source, duration=1)
         print("Listening... (say something!)")
-
         try:
-            # Listen for speech and automatically detect when the user stops talking
             audio_data = recognizer.listen(source)
             print("Processing speech...")
             text = recognizer.recognize_google(audio_data, language="en-US")
@@ -76,9 +69,7 @@ def speech_to_text():
     return None
 
 def ask_gemini(prompt_text):
-    """
-    Sends text to the Gemini model using the persistent chat session to maintain context.
-    """
+    """Sends text to the Gemini model using the persistent chat session."""
     try:
         print("Sending to Gemini...")
         response = chat.send_message(prompt_text)
@@ -88,9 +79,7 @@ def ask_gemini(prompt_text):
         return "I'm having some trouble connecting to my brain right now."
 
 def text_to_speech(text):
-    """
-    Converts text to speech using the pre-initialized engine.
-    """
+    """Converts text to speech using the pre-initialized engine."""
     if not text:
         print("No text to speak.")
         return
@@ -100,30 +89,81 @@ def text_to_speech(text):
     except Exception as e:
         print(f"An error occurred with the TTS engine: {e}")
 
+def save_to_memory(user_input, isan_output):
+    """Loads history from memory.json, adds the new conversation, and saves it."""
+    filename = "memory.json"
+    current_conversation = {"user": user_input, "isan": isan_output}
+    history = []
+    try:
+        with open(filename, 'r', encoding='utf-8') as f:
+            data_from_file = json.load(f)
+            if isinstance(data_from_file, list):
+                history = data_from_file
+            elif isinstance(data_from_file, dict):
+                history = [data_from_file]
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    history.append(current_conversation)
+    with open(filename, 'w', encoding='utf-8') as f:
+        json.dump(history, f, ensure_ascii=False, indent=4)
+    print(f"Conversation saved to {filename}")
+
+
+# --- 3. MODEL AND VOICE INITIALIZATION ---
+
+# Configure the Gemini model
+try:
+    model = genai.GenerativeModel(
+        model_name='gemini-2.5-pro', #change if needed
+        system_instruction=(
+           "input personality here"
+        )
+    )
+    # Load previous conversation history BEFORE starting the chat
+    # This call now works because the function is defined above
+    conversation_history = load_history_from_memory()
+    # Start a chat session with the loaded history
+    chat = model.start_chat(history=conversation_history)
+
+except Exception as e:
+    print(f"Error initializing the Gemini model: {e}")
+    exit()
+
+# Initialize the text-to-speech engine
+try:
+    tts_engine = pyttsx3.init()
+    english_voice_id = None
+    for voice in tts_engine.getProperty('voices'):
+        if "english" in voice.name.lower():
+            english_voice_id = voice.id
+            break
+    if english_voice_id:
+        tts_engine.setProperty('voice', english_voice_id)
+except Exception as e:
+    print(f"Error initializing the TTS engine: {e}")
+    exit()
+
 
 # --- 4. MAIN PROGRAM EXECUTION ---
 
 if __name__ == "__main__":
     print("AI Assistant 'I-san' is now running. Say 'goodbye' to exit.")
     
-    # Main loop to keep the assistant running
     while True:
         user_speech = speech_to_text()
 
         if user_speech:
-            # Check for the exit command
             if "goodbye" in user_speech.lower():
                 farewell = "Okay, talk to you later. Goodbye!"
                 print(f"\nI-san says: {farewell}")
                 text_to_speech(farewell)
-                break  # Exit the while loop
+                save_to_memory(user_speech, farewell)
+                break
 
-            # Get the response from Gemini
             gemini_response = ask_gemini(user_speech)
             
-            # Print and speak the response
             print(f"\nI-san says: {gemini_response}")
             text_to_speech(gemini_response)
+            save_to_memory(user_speech, gemini_response)
         else:
             print("No speech detected. Please try again.")
-
