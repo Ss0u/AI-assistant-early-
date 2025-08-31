@@ -15,7 +15,7 @@ this project is an AI developed in python powered by gemini. the user can intera
  
 human voice output
 
-better chat memory, via docker
+better chat memory
 
 a 3d model connected to the AI
 
@@ -28,4 +28,6 @@ decentralization of gemini, creating a self hosted, private, AI.
 
 # Dev notes
 
-08/28 - The voice input from google is TERRIBLE LOL
+Removed the memory json files since it was causing problems.
+
+added faster whisper as an voice input
