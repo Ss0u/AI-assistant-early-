@@ -1,85 +1,71 @@
 import os
 from dotenv import load_dotenv
-import speech_recognition as sr
 import google.generativeai as genai
 import pyttsx3
-import json
+from faster_whisper import WhisperModel
+import sounddevice as sd
+import numpy as np
+import tempfile
+import wave
+import time
 
-# --- 1. INITIAL CONFIGURATION ---
-
-# Load environment variables from .env file
 dotenv_path = os.path.join(os.path.dirname(__file__), ".env")
 load_dotenv(dotenv_path)
 
-# Load and configure the Google API key
 api_key = os.getenv("GOOGLE_API_KEY")
 if not api_key:
     raise ValueError("GOOGLE_API_KEY not found in the .env file")
 genai.configure(api_key=api_key)
 
-DATA_FOLDER = "data"
-MEMORY_FILE = os.path.join(DATA_FOLDER, "memory.json")
+WHISPER_MODEL = "base"
+GEMINI_MODEL = "gemini-1.5-flash"
+RECORDING_DURATION_SECONDS = 10
 
-if not os.path.exists(DATA_FOLDER):
-        os.makedirs(DATA_FOLDER)
-
-# --- 2. FUNCTION DEFINITIONS (ALL FUNCTIONS GO HERE) ---
-
-def load_history_from_memory():
-    """Loads conversation history from memory.json and formats it for Gemini."""
-    filename = "memory.json"
+def speech_to_text_whisper(model: WhisperModel):
+    samplerate = 16000
+    print(f"\nListening for {RECORDING_DURATION_SECONDS} seconds... (speak when you're ready)")
+    audio_path = None
     try:
-        with open(filename, 'r', encoding='utf-8') as f:
-            history_json = json.load(f)
-        
-        # Convert our simple JSON format to the one Gemini's 'history' parameter expects
-        gemini_history = []
-        for entry in history_json:
-            if isinstance(entry, dict) and 'user' in entry and 'isan' in entry:
-                gemini_history.append({'role': 'user', 'parts': [entry['user']]})
-                gemini_history.append({'role': 'model', 'parts': [entry['isan']]})
-        
-        if gemini_history:
-            print(f"Successfully loaded {len(history_json)} turns from conversation history.")
-        return gemini_history
-            
-    except (FileNotFoundError, json.JSONDecodeError):
-        print("No previous history found. Starting a new conversation.")
-        return []
-
-def speech_to_text():
-    """Captures audio when speech is detected and converts it to text."""
-    recognizer = sr.Recognizer()
-    with sr.Microphone() as source:
-        print("\nAdjusting for ambient noise...")
-        recognizer.adjust_for_ambient_noise(source, duration=1)
-        print("Listening... (say something!)")
-        try:
-            audio_data = recognizer.listen(source)
-            print("Processing speech...")
-            text = recognizer.recognize_google(audio_data, language="en-US")
+        audio_data = sd.rec(
+            int(samplerate * RECORDING_DURATION_SECONDS),
+            samplerate=samplerate,
+            channels=1,
+            dtype="float32"
+        )
+        sd.wait()
+        audio_data = np.squeeze(audio_data)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
+            audio_path = tmpfile.name
+            with wave.open(audio_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(samplerate)
+                wf.writeframes((audio_data * 32767).astype(np.int16).tobytes())
+        segments, info = model.transcribe(audio_path, vad_filter=True, language="en")
+        text = "".join(seg.text for seg in segments).strip()
+        if text:
             print(f"You said: {text}")
             return text
-        except sr.WaitTimeoutError:
-            print("Listening timed out while waiting for phrase to start.")
-        except sr.UnknownValueError:
-            print("Could not understand the audio.")
-        except sr.RequestError as e:
-            print(f"Could not request results from Google Speech Recognition service; {e}")
-    return None
+        else:
+            print("I didn't hear anything.")
+            return None
+    except Exception as e:
+        print(f"An error occurred during transcription: {e}")
+        return None
+    finally:
+        if audio_path and os.path.exists(audio_path):
+            os.remove(audio_path)
 
-def ask_gemini(prompt_text):
-    """Sends text to the Gemini model using the persistent chat session."""
+def ask_gemini(prompt_text, chat_session):
     try:
         print("Sending to Gemini...")
-        response = chat.send_message(prompt_text)
+        response = chat_session.send_message(prompt_text)
         return response.text
     except Exception as e:
         print(f"Error calling the Gemini API: {e}")
         return "I'm having some trouble connecting to my brain right now."
 
-def text_to_speech(text):
-    """Converts text to speech using the pre-initialized engine."""
+def text_to_speech(text, tts_engine):
     if not text:
         print("No text to speak.")
         return
@@ -89,81 +75,63 @@ def text_to_speech(text):
     except Exception as e:
         print(f"An error occurred with the TTS engine: {e}")
 
-def save_to_memory(user_input, isan_output):
-    """Loads history from memory.json, adds the new conversation, and saves it."""
-    filename = "memory.json"
-    current_conversation = {"user": user_input, "isan": isan_output}
-    history = []
+def initialize_systems():
     try:
-        with open(filename, 'r', encoding='utf-8') as f:
-            data_from_file = json.load(f)
-            if isinstance(data_from_file, list):
-                history = data_from_file
-            elif isinstance(data_from_file, dict):
-                history = [data_from_file]
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass
-    history.append(current_conversation)
-    with open(filename, 'w', encoding='utf-8') as f:
-        json.dump(history, f, ensure_ascii=False, indent=4)
-    print(f"Conversation saved to {filename}")
-
-
-# --- 3. MODEL AND VOICE INITIALIZATION ---
-
-# Configure the Gemini model
-try:
-    model = genai.GenerativeModel(
-        model_name='gemini-2.5-pro', #change if needed
-        system_instruction=(
-           "input personality here"
+        print(f"Loading Faster-Whisper model ({WHISPER_MODEL})...")
+        transcriber = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
+        print("Faster-Whisper model loaded successfully.")
+    except Exception as e:
+        print(f"Error initializing Faster-Whisper: {e}")
+        return None, None, None
+    try:
+        print(f"Initializing Gemini model ({GEMINI_MODEL})...")
+        model = genai.GenerativeModel(
+            model_name=GEMINI_MODEL,
+            system_instruction=(
+                "persona"
+            )
         )
-    )
-    # Load previous conversation history BEFORE starting the chat
-    # This call now works because the function is defined above
-    conversation_history = load_history_from_memory()
-    # Start a chat session with the loaded history
-    chat = model.start_chat(history=conversation_history)
-
-except Exception as e:
-    print(f"Error initializing the Gemini model: {e}")
-    exit()
-
-# Initialize the text-to-speech engine
-try:
-    tts_engine = pyttsx3.init()
-    english_voice_id = None
-    for voice in tts_engine.getProperty('voices'):
-        if "english" in voice.name.lower():
-            english_voice_id = voice.id
-            break
-    if english_voice_id:
-        tts_engine.setProperty('voice', english_voice_id)
-except Exception as e:
-    print(f"Error initializing the TTS engine: {e}")
-    exit()
-
-
-# --- 4. MAIN PROGRAM EXECUTION ---
+        chat = model.start_chat()  # sem histórico
+        print("Gemini model initialized successfully.")
+    except Exception as e:
+        print(f"Error initializing the Gemini model: {e}")
+        return None, None, None
+    try:
+        print("Initializing TTS engine...")
+        tts_engine = pyttsx3.init()
+        english_voice_id = None
+        voices = tts_engine.getProperty('voices')
+        for voice in voices:
+            if "english" in voice.name.lower() or "en-us" in voice.id.lower():
+                english_voice_id = voice.id
+                break
+        if english_voice_id:
+            tts_engine.setProperty('voice', english_voice_id)
+            print("English TTS voice found and set.")
+        else:
+            print("Warning: No English voice found. Using default TTS voice.")
+    except Exception as e:
+        print(f"Error initializing the TTS engine: {e}")
+        return None, None, None
+    return transcriber, chat, tts_engine
 
 if __name__ == "__main__":
-    print("AI Assistant 'I-san' is now running. Say 'goodbye' to exit.")
-    
+    transcriber, chat_session, tts_engine = initialize_systems()
+    if not all([transcriber, chat_session, tts_engine]):
+        print("Failed to initialize one or more systems. Exiting.")
+        exit()
+
+    print("\nrunning. ")
+
     while True:
-        user_speech = speech_to_text()
-
+        user_speech = speech_to_text_whisper(transcriber)
         if user_speech:
-            if "goodbye" in user_speech.lower():
-                farewell = "Okay, talk to you later. Goodbye!"
-                print(f"\nI-san says: {farewell}")
-                text_to_speech(farewell)
-                save_to_memory(user_speech, farewell)
-                break
-
-            gemini_response = ask_gemini(user_speech)
-            
+            gemini_response = ask_gemini(user_speech, chat_session)
             print(f"\nI-san says: {gemini_response}")
-            text_to_speech(gemini_response)
-            save_to_memory(user_speech, gemini_response)
+            text_to_speech(gemini_response, tts_engine)
+
+            if "goodbye" in user_speech.lower():
+                break
         else:
-            print("No speech detected. Please try again.")
+            print("Waiting for your command...")
+            time.sleep(1)
